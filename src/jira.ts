@@ -10,6 +10,7 @@ export interface JiraClient {
     id: string;
     key: string;
     tempoAccountId?: string;
+    remainingEstimateSeconds: number;
   }>;
   searchUsers(query: string): Promise<JiraUser[]>;
   getUsersByAccountIds(accountIds: string[]): Promise<Record<string, JiraUser>>;
@@ -230,6 +231,7 @@ export function createJiraClient(ctx: Ctx): JiraClient {
       id: string;
       key: string;
       tempoAccountId?: string;
+      remainingEstimateSeconds: number;
     }> {
       try {
         const result = idOrKeySchema().safeParse(idOrKey);
@@ -248,9 +250,19 @@ export function createJiraClient(ctx: Ctx): JiraClient {
             ]?.id
           : undefined;
 
+        const fields = response.data.fields || {};
+        const remainingEstimateSeconds = Number(
+          fields.timetracking?.remainingEstimateSeconds ??
+            fields.timeestimate ??
+            0,
+        );
+
         return {
           id: response.data.id,
           key: response.data.key,
+          remainingEstimateSeconds: Number.isFinite(remainingEstimateSeconds)
+            ? remainingEstimateSeconds
+            : 0,
           ...(tempoAccountId ? { tempoAccountId } : {}),
         };
       } catch (error) {
