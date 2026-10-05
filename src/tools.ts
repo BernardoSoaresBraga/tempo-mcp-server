@@ -610,9 +610,15 @@ export function createTools(ctx: Ctx, jira?: JiraClient): Tools {
 
         const { id: issueId } = issue;
         const attributesArray = mergeAttributes(account, attributes);
+        const timeSpentSeconds = Math.round(timeSpentHours * 3600);
+        const remainingEstimateSeconds = computeRemainingEstimate(
+          issue.remainingEstimateSeconds,
+          timeSpentSeconds,
+        );
         const payload = {
           issueId: Number(issueId),
-          timeSpentSeconds: Math.round(timeSpentHours * 3600),
+          timeSpentSeconds,
+          remainingEstimateSeconds,
           startDate: date,
           authorAccountId: accountId,
           description,
@@ -678,13 +684,22 @@ export function createTools(ctx: Ctx, jira?: JiraClient): Tools {
 
             const account = await fetchTempoAccountFromIssue(issue);
 
+            // Decrement the issue's remaining estimate cumulatively, in entry
+            // order, so the last entry leaves the issue at the final value.
+            let runningRemaining = issue.remainingEstimateSeconds;
             const formattedEntries = entries.map((entry) => {
               const attributesArray = mergeAttributes(
                 account,
                 entry.attributes,
               );
+              const timeSpentSeconds = Math.round(entry.timeSpentHours * 3600);
+              runningRemaining = computeRemainingEstimate(
+                runningRemaining,
+                timeSpentSeconds,
+              );
               return {
-                timeSpentSeconds: Math.round(entry.timeSpentHours * 3600),
+                timeSpentSeconds,
+                remainingEstimateSeconds: runningRemaining,
                 startDate: entry.date,
                 authorAccountId,
                 description: entry.description || '',
@@ -826,10 +841,21 @@ export function createTools(ctx: Ctx, jira?: JiraClient): Tools {
           attributes,
         );
 
+        const newTimeSpentSeconds = Math.round(timeSpentHours * 3600);
+        const worklogIssueId = (worklog as any).issue?.id ?? worklog.issueId;
+        const editIssue = await jiraClient.getIssue(String(worklogIssueId));
+        // Only the difference between the new and the old duration affects
+        // the remaining estimate.
+        const remainingEstimateSeconds = computeRemainingEstimate(
+          editIssue.remainingEstimateSeconds,
+          newTimeSpentSeconds - (worklog.timeSpentSeconds || 0),
+        );
+
         const updatePayload = {
           authorAccountId: worklog.author.accountId,
           startDate: date || worklog.startDate,
-          timeSpentSeconds: Math.round(timeSpentHours * 3600),
+          timeSpentSeconds: newTimeSpentSeconds,
+          remainingEstimateSeconds,
           billableSeconds: Math.round(timeSpentHours * 3600),
           ...(description !== null && { description }),
           ...(startTime && { startTime: `${startTime}:00` }),
@@ -1216,6 +1242,21 @@ function computeMissingDays(
   }
 
   return missing;
+}
+
+/**
+ * Remaining estimate after logging `loggedSeconds` against an issue whose
+ * current remaining estimate is `currentSeconds`.
+ * Rules: an issue already at 0 stays at 0 (it is never re-opened, even when a
+ * worklog is shortened), and the result is never negative.
+ */
+export function computeRemainingEstimate(
+  currentSeconds: number,
+  loggedSeconds: number,
+): number {
+  const current = Math.max(0, Math.round(currentSeconds || 0));
+  if (current === 0) return 0;
+  return Math.max(0, current - Math.round(loggedSeconds || 0));
 }
 
 /**
